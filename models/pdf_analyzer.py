@@ -11,17 +11,21 @@ class PdfAnalyzer:
         if not os.path.exists(self.download_dir):
             return False, f"A pasta {self.download_dir} não existe."
 
-        pdf_files = [f for f in os.listdir(self.download_dir) if f.endswith('.pdf')]
+        pdf_files = []
+        for root, dirs, files in os.walk(self.download_dir):
+            for file in files:
+                if file.endswith('.pdf'):
+                    pdf_files.append(os.path.join(root, file))
+
         if not pdf_files:
-            return False, "Nenhum arquivo PDF encontrado na pasta downloads."
+            return False, "Nenhum arquivo PDF encontrado na pasta downloads ou em suas subpastas."
 
         extracted_data = []
         
         # Regex básico para tentar extrair os dados. 
         # Como o formato pode variar, uma abordagem por partes é melhor.
         
-        for file in pdf_files:
-            file_path = os.path.join(self.download_dir, file)
+        for file_path in pdf_files:
             try:
                 reader = PyPDF2.PdfReader(file_path)
                 for page in reader.pages:
@@ -64,7 +68,7 @@ class PdfAnalyzer:
                         
                         if processo:
                             extracted_data.append({
-                                'Arquivo Origem': file,
+                                'Arquivo Origem': os.path.basename(file_path),
                                 'Processo': processo,
                                 'Usuário': usuario,
                                 'Data': data,
@@ -74,7 +78,7 @@ class PdfAnalyzer:
                             })
                             
             except Exception as e:
-                print(f"Erro ao processar {file}: {e}")
+                print(f"Erro ao processar {file_path}: {e}")
 
         if not extracted_data:
             return False, "Nenhum dado válido foi extraído dos PDFs."
@@ -88,7 +92,13 @@ class PdfAnalyzer:
         
         # Salva os dados detalhados no CSV
         output_path = os.path.join(os.getcwd(), output_filename)
-        df.to_csv(output_path, index=False, sep=';', encoding='utf-8-sig')
+        aviso_erro = ""
+        try:
+            df.to_csv(output_path, index=False, sep=';', encoding='utf-8-sig')
+        except PermissionError:
+            aviso_erro += f"\n[!] AVISO: Não foi possível atualizar o '{output_filename}' pois ele está aberto em outro programa (ex: Excel)."
+        except Exception as e:
+            aviso_erro += f"\n[!] Erro ao salvar '{output_filename}': {e}"
         
         # Gera o quantitativo (resumo) agrupado por Ano, Mês e Grupo
         if not df.empty and 'Mês' in df.columns and 'Ano' in df.columns:
@@ -97,16 +107,26 @@ class PdfAnalyzer:
             
             resumo_path = os.path.join(os.getcwd(), "resumo_quantitativo.csv")
             
-            # Escreve o cabeçalho personalizado
-            with open(resumo_path, 'w', encoding='utf-8-sig') as f:
-                f.write(f"Quantitativo Geral:;{len(df)}\n")
-                f.write("\nQuantitativo por Mês e Grupo:\n")
+            try:
+                # Escreve o cabeçalho personalizado
+                with open(resumo_path, 'w', encoding='utf-8-sig') as f:
+                    f.write(f"Quantitativo Geral:;{len(df)}\n")
+                    f.write("\nQuantitativo por Mês e Grupo:\n")
+                
+                # Adiciona os dados do dataframe em seguida
+                resumo_df.to_csv(resumo_path, mode='a', index=False, sep=';', encoding='utf-8-sig')
+            except PermissionError:
+                aviso_erro += f"\n[!] AVISO: Não foi possível atualizar o 'resumo_quantitativo.csv' pois está aberto."
+            except Exception as e:
+                aviso_erro += f"\n[!] Erro ao salvar resumo: {e}"
             
-            # Adiciona os dados do dataframe em seguida
-            resumo_df.to_csv(resumo_path, mode='a', index=False, sep=';', encoding='utf-8-sig')
+            # Prepara a string de resumo para ser exibida na interface (independente de ter salvo o CSV ou não)
+            texto_resumo = f"\nQUANTITATIVO MENSAL:\n------------------------\nTotal Geral: {len(df)} processos\n"
+            for index, row in resumo_df.iterrows():
+                texto_resumo += f"[{row['Mês']}/{row['Ano']}] {row['Grupo']}: {row['Quantidade']} processo(s)\n"
             
-            msg_resumo = f"\nResumo quantitativo salvo em resumo_quantitativo.csv"
+            msg_resumo = f"\nResumo gerado com sucesso.{aviso_erro}\n{texto_resumo}"
         else:
-            msg_resumo = ""
+            msg_resumo = f"\nNão foi possível gerar quantitativos.{aviso_erro}"
         
-        return True, f"Extração concluída com sucesso! {len(extracted_data)} registros salvos em {output_filename}.{msg_resumo}"
+        return True, f"Extração concluída! {len(extracted_data)} registros lidos.{msg_resumo}"
