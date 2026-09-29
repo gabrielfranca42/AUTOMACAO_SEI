@@ -15,14 +15,25 @@ class SeiBotModel:
     def __init__(self):
         chrome_options = Options()
         
-        # Cria a pasta de downloads no diretório atual
-        self.download_dir = os.path.join(os.getcwd(), "downloads")
-        if not os.path.exists(self.download_dir):
-            os.makedirs(self.download_dir)
+        # Pasta raiz de downloads
+        self.download_root = os.path.join(os.getcwd(), "downloads")
+        if not os.path.exists(self.download_root):
+            os.makedirs(self.download_root)
+        
+        # Subpasta atual (será definida para cada grupo)
+        self.download_dir = self.download_root
             
-        # Aqui podemos configurar a pasta padrão de downloads se necessário no futuro
         self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         self.wait = WebDriverWait(self.driver, 10)
+
+    def set_download_subdir(self, grupo_name):
+        """Cria e define a subpasta de downloads para o grupo atual."""
+        # Sanitiza o nome do grupo para usar como nome de pasta
+        safe_name = grupo_name.strip().replace("/", "-").replace("\\", "-")
+        self.download_dir = os.path.join(self.download_root, safe_name)
+        if not os.path.exists(self.download_dir):
+            os.makedirs(self.download_dir)
+        print(f"[LOG-MODELO] Pasta de download definida: {self.download_dir}")
 
     def open_initial_page(self, url):
         self.driver.get(url)
@@ -110,7 +121,7 @@ class SeiBotModel:
             print(f"[LOG-MODELO] Erro ao selecionar itens: {e}")
             return False
 
-    def click_download_button(self, page_number):
+    def click_download_button(self, page_number, grupo_name=""):
         try:
             # Desativa o dialog de impressão do navegador para não travar o bot
             self.driver.execute_script("window.print = function() {};")
@@ -134,9 +145,15 @@ class SeiBotModel:
             print_options = PrintOptions()
             pdf_base64 = self.driver.print_page(print_options)
             
-            file_path = os.path.join(self.download_dir, f"pagina{page_number}.pdf")
+            # Nome do arquivo: "pagina 1 lts.pdf"
+            grupo_label = grupo_name.lower().strip() if grupo_name else "grupo"
+            file_name = f"pagina {page_number} {grupo_label}.pdf"
+            file_path = os.path.join(self.download_dir, file_name)
+            
             with open(file_path, "wb") as f:
                 f.write(base64.b64decode(pdf_base64))
+            
+            print(f"[LOG-MODELO] PDF salvo: {file_path}")
                 
             # Fecha a popup de impressão e volta pra principal
             if len(self.driver.window_handles) > 1:
