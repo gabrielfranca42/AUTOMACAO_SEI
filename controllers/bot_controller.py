@@ -3,80 +3,215 @@ from models.bot_model import SeiBotModel
 from views.console_view import ConsoleView
 
 class BotController:
-    def __init__(self):
+    def __init__(self, view=None):
         self.model = SeiBotModel()
-        self.view = ConsoleView()
-        
-    def run(self):
-        try:
-            print("\n" + "="*50)
-            print("    ROBÔ DE ACOMPANHAMENTO ESPECIAL - SEI ")
-            print("="*50)
-            
-            grupo_alvo = input("\n[?] Digite o GRUPO que deseja baixar (Ex: LTS, DEPENDENTE, HORARIO ESPECIAL)\n> ").strip().upper()
-            if not grupo_alvo:
-                grupo_alvo = "LTS"
-                
-            print("\n[?] O que você deseja fazer?")
-            print("[1] Baixar todas as páginas até o final")
-            print("[2] Baixar apenas os processos de um ano específico (e mais recentes)")
-            
-            opcao = input("\nEscolha a opção (1 ou 2)\n> ").strip()
-            
+        self.view = view if view else ConsoleView()
+
+    def coletar_tarefas(self):
+        """Coleta a lista de grupos e anos do usuário antes de abrir o navegador."""
+        tarefas = []
+
+        print("\n" + "="*60)
+        print("       ROBÔ DE ACOMPANHAMENTO ESPECIAL - SEI")
+        print("="*60)
+
+        print("\n[?] O que você deseja fazer?")
+        print("[1] Baixar todas as páginas até o final")
+        print("[2] Baixar apenas os processos de um ano específico")
+        print("[3] Analisar PDFs baixados (extrair para CSV)")
+
+        opcao = input("\nEscolha a opção (1, 2 ou 3)\n> ").strip()
+
+        if opcao == "3":
+            return "analise", []
+
+        while True:
+            print("\n" + "-"*40)
+            grupo = input("[?] Digite o GRUPO que deseja baixar (Ex: LTS, DEPENDENTE, HORARIO ESPECIAL)\n> ").strip().upper()
+            if not grupo:
+                grupo = "LTS"
+
             ano_alvo = None
             if opcao == "2":
-                ano_alvo = input("\n[?] Qual ano você quer como limite? (ex: 2026)\n> ").strip()
-            
-            print("\n" + "="*50)
+                ano_alvo = input(f"[?] Qual ano limite para o grupo '{grupo}'? (ex: 2026)\n> ").strip()
+
+            tarefas.append({"grupo": grupo, "ano": ano_alvo})
+            print(f"\n[+] Grupo '{grupo}' adicionado à lista" + (f" (limite: {ano_alvo})" if ano_alvo else " (sem limite de ano)"))
+
+            # Mostra resumo atual
+            print("\n--- Lista de tarefas atual ---")
+            for i, t in enumerate(tarefas, 1):
+                limite = f"até {t['ano']}" if t['ano'] else "todas as páginas"
+                print(f"  {i}. {t['grupo']} -> {limite}")
+
+            adicionar = input("\n[?] Deseja adicionar mais um grupo? (S/N)\n> ").strip().upper()
+            if adicionar != "S":
+                break
+
+        return opcao, tarefas
+
+    def processar_grupo(self, grupo, ano_alvo, check_stop=None):
+        """Processa um único grupo: seleciona, pagina e baixa os PDFs."""
+        self.view.show_message(f"[GRUPO] Alterando para o grupo '{grupo}'...")
+        self.model.select_group(grupo)
+
+        # Define a subpasta para esse grupo
+        self.model.set_download_subdir(grupo)
+
+        page = 1
+        while True:
+            if check_stop and check_stop():
+                self.view.show_message(f"[!] Execução interrompida no grupo '{grupo}', página {page}.")
+                break
+                
+            self.view.show_message(f"[PÁGINA {page}] Processando página {page} do grupo '{grupo}'...")
+
+            self.view.show_message(f"   -> Selecionando todos os itens da página {page}...")
+            self.model.select_all_items()
+
+            self.view.show_progress(page)
+            self.model.click_download_button(page, grupo)
+
+            # Verifica o ano DEPOIS de baixar, para não perder a página atual
+            if ano_alvo:
+                self.view.show_message(f"   -> Verificando se os processos pertencem ao ano {ano_alvo} ou mais recentes...")
+                if self.model.has_passed_target_year(ano_alvo):
+                    self.view.show_message(f"   -> Processos anteriores a {ano_alvo} encontrados nesta página. Não há mais páginas relevantes.")
+                    break
+
+            self.view.show_message(f"   -> Verificando se existe página {page + 1}...")
+            if not self.model.go_to_next_page():
+                self.view.show_message(f"   -> Não há mais páginas para o grupo '{grupo}'. Fim da lista.")
+                break
+
+            page += 1
+
+        self.view.show_success(f"Download do grupo '{grupo}' finalizado! ({page} páginas processadas)")
+
+    def run(self):
+        try:
+            # PASSO 0: Coleta todas as informações ANTES de abrir o navegador
+            opcao, tarefas = self.coletar_tarefas()
+
+            # Se escolheu apenas analisar PDFs
+            if opcao == "analise":
+                from models.pdf_analyzer import PdfAnalyzer
+                self.view.show_message("Iniciando análise dos PDFs...")
+                analyzer = PdfAnalyzer()
+                success, msg = analyzer.analyze_pdfs_to_csv()
+                if success:
+                    self.view.show_success(msg)
+                else:
+                    self.view.show_error(msg)
+                return
+
+            # Pergunta se quer gerar CSV automaticamente no final
+            fazer_analise = input("\n[?] Após o término dos downloads, deseja gerar os CSVs automaticamente? (S/N)\n> ").strip().upper()
+
+            print("\n" + "="*60)
             self.view.show_message("Iniciando o navegador...")
-            # URL de login do SEI Recife fornecida
-            initial_url = "https://sip.recife.pe.gov.br/sip/login.php?sigla_orgao_sistema=PR&sigla_sistema=SEI&infra_url=L3NlaS8=" 
-            
+
+            # URL de login do SEI Recife
+            initial_url = "https://sip.recife.pe.gov.br/sip/login.php?sigla_orgao_sistema=PR&sigla_sistema=SEI&infra_url=L3NlaS8="
+
             self.model.open_initial_page(initial_url)
-            
-            # Faz o login automático com as credenciais
+
+            # PASSO 1: Login automático
             self.view.show_message("[PASSO 1] Iniciando login automático...")
             self.model.auto_login("", "", "")
             self.view.show_success("[SUCESSO] Login concluído e possíveis modais fechados!")
-            
-            # Navega para Acompanhamento Especial pelo menu
+
+            # PASSO 2: Navega para Acompanhamento Especial
             self.view.show_message("[PASSO 2] Navegando para a página Acompanhamento Especial...")
             self.model.navigate_to_acompanhamento()
             time.sleep(2)
-            
-            # Escolhe o grupo selecionado pelo usuário
-            self.view.show_message(f"[PASSO 3] Alterando grupo na tela para '{grupo_alvo}'...")
-            self.model.select_group(grupo_alvo)
-            
-            # Loop de Paginação e Download
-            page = 1
-            while True:
-                self.view.show_message(f"[PASSO 4] Iniciando processamento da página {page}...")
-                
-                # Se escolheu baixar por ano, verifica as datas antes de baixar
-                if ano_alvo:
-                    self.view.show_message(f"   -> Verificando se os processos pertencem ao ano {ano_alvo} ou mais recentes...")
-                    if self.model.has_passed_target_year(ano_alvo):
-                        self.view.show_message(f"   -> Processos anteriores a {ano_alvo} encontrados! Encerrando a busca por limite de ano.")
-                        break
-                
-                self.view.show_message(f"   -> Selecionando todos os itens da página {page}...")
-                self.model.select_all_items()
-                
-                self.view.show_progress(page)
-                self.model.click_download_button(page)
-                
-                self.view.show_message(f"   -> Verificando se existe página {page + 1}...")
-                if not self.model.go_to_next_page():
-                    self.view.show_message("Não há mais páginas. Fim da lista.")
-                    break
-                
-                page += 1
-                
-            self.view.show_success("Processo de download finalizado!")
-            
+
+            # PASSO 3: Processa cada grupo da lista de tarefas
+            for i, tarefa in enumerate(tarefas, 1):
+                print("\n" + "="*60)
+                self.view.show_message(f"[TAREFA {i}/{len(tarefas)}] Iniciando grupo '{tarefa['grupo']}'...")
+                print("="*60)
+                self.processar_grupo(tarefa["grupo"], tarefa["ano"])
+
+            print("\n" + "="*60)
+            self.view.show_success("Todos os grupos foram processados com sucesso!")
+
+            # Executa a análise automaticamente se o usuário escolheu 'S'
+            if fazer_analise == 'S':
+                from models.pdf_analyzer import PdfAnalyzer
+                self.view.show_message("Iniciando análise automática dos PDFs...")
+                analyzer = PdfAnalyzer()
+                success, msg = analyzer.analyze_pdfs_to_csv()
+                if success:
+                    self.view.show_success(msg)
+                else:
+                    self.view.show_error(msg)
+
         except Exception as e:
             self.view.show_error(str(e))
         finally:
             input("\nPressione Enter no console para fechar o navegador e encerrar o script...")
+            self.model.close()
+
+    def run_gui(self, username, password, orgao, opcao, tarefas, fazer_analise, check_stop=None):
+        """Executa o bot através dos dados fornecidos pela GUI."""
+        try:
+            # Se escolheu apenas analisar PDFs
+            if opcao == "analise" or fazer_analise == 'S':
+                pass # A análise será feita mais abaixo no final do método para todos os fluxos
+                
+            if opcao == "analise":
+                from models.pdf_analyzer import PdfAnalyzer
+                self.view.show_message("Iniciando análise dos PDFs...")
+                analyzer = PdfAnalyzer()
+                success, msg = analyzer.analyze_pdfs_to_csv()
+                if success:
+                    self.view.show_success(msg)
+                else:
+                    self.view.show_error(msg)
+                return
+
+            self.view.show_message("Iniciando o navegador...")
+            initial_url = "https://sip.recife.pe.gov.br/sip/login.php?sigla_orgao_sistema=PR&sigla_sistema=SEI&infra_url=L3NlaS8="
+
+            self.model.open_initial_page(initial_url)
+
+            # PASSO 1: Login automático
+            self.view.show_message("[PASSO 1] Iniciando login automático...")
+            self.model.auto_login(username, password, orgao)
+            self.view.show_success("[SUCESSO] Login concluído e possíveis modais fechados!")
+
+            # PASSO 2: Navega para Acompanhamento Especial
+            self.view.show_message("[PASSO 2] Navegando para a página Acompanhamento Especial...")
+            self.model.navigate_to_acompanhamento()
+            time.sleep(2)
+
+            # PASSO 3: Processa cada grupo da lista de tarefas
+            for i, tarefa in enumerate(tarefas, 1):
+                if check_stop and check_stop():
+                    self.view.show_message("[!] Execução geral cancelada pelo usuário.")
+                    break
+                self.view.show_message(f"[TAREFA {i}/{len(tarefas)}] Iniciando grupo '{tarefa['grupo']}'...")
+                self.processar_grupo(tarefa["grupo"], tarefa["ano"], check_stop=check_stop)
+
+            if check_stop and check_stop():
+                self.view.show_message("Processamento finalizado com cancelamento prévio.")
+            else:
+                self.view.show_success("Todos os grupos foram processados com sucesso!")
+
+            # Executa a análise automaticamente
+            if fazer_analise == 'S' or opcao == 'analise':
+                from models.pdf_analyzer import PdfAnalyzer
+                self.view.show_message("Iniciando análise automática dos PDFs para extração e quantitativos...")
+                analyzer = PdfAnalyzer()
+                success, msg = analyzer.analyze_pdfs_to_csv()
+                if success:
+                    self.view.show_success(msg)
+                else:
+                    self.view.show_error(msg)
+
+        except Exception as e:
+            self.view.show_error(str(e))
+        finally:
+            self.view.show_message("Fechando navegador...")
             self.model.close()
