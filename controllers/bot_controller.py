@@ -1,4 +1,5 @@
 import time
+import os
 from models.bot_model import SeiBotModel
 from views.console_view import ConsoleView
 
@@ -54,11 +55,33 @@ class BotController:
         """Processa um único grupo: seleciona, pagina e baixa os PDFs."""
         self.view.show_message(f"[GRUPO] Alterando para o grupo '{grupo}'...")
         self.model.select_group(grupo)
-
-        # Define a subpasta para esse grupo
         self.model.set_download_subdir(grupo)
 
+        safe_name = grupo.lower().strip()
+        
+        # Encontra a última página baixada
+        import glob
+        import re
+        pdfs = glob.glob(os.path.join(self.model.download_dir, f"pagina * {safe_name}.pdf"))
+        max_page = 0
+        for pdf in pdfs:
+            match = re.search(r'pagina (\d+)', os.path.basename(pdf))
+            if match:
+                num = int(match.group(1))
+                if num > max_page:
+                    max_page = num
+
         page = 1
+        buscando_ano = False
+        direcao = 1 # 1 para frente, -1 para trás
+
+        if max_page > 1:
+            self.view.show_message(f"   -> Última página baixada detectada: {max_page}. Pulando direto para ela...")
+            if self.model.go_to_page(max_page):
+                page = max_page
+            else:
+                self.view.show_message("   -> Falha ao pular. Retomando da página 1.")
+
         while True:
             if check_stop and check_stop():
                 self.view.show_message(f"[!] Execução interrompida no grupo '{grupo}', página {page}.")
@@ -66,25 +89,65 @@ class BotController:
                 
             self.view.show_message(f"[PÁGINA {page}] Processando página {page} do grupo '{grupo}'...")
 
-            self.view.show_message(f"   -> Selecionando todos os itens da página {page}...")
-            self.model.select_all_items()
-
-            self.view.show_progress(page)
-            self.model.click_download_button(page, grupo)
-
-            # Verifica o ano DEPOIS de baixar, para não perder a página atual
+            # Verifica o ano ANTES de baixar
             if ano_alvo:
-                self.view.show_message(f"   -> Verificando se os processos pertencem ao ano {ano_alvo} ou mais recentes...")
-                if self.model.has_passed_target_year(ano_alvo):
-                    self.view.show_message(f"   -> Processos anteriores a {ano_alvo} encontrados nesta página. Não há mais páginas relevantes.")
-                    break
+                ano_alvo_int = int(ano_alvo)
+                anos_pagina = self.model.get_years_on_page()
+                if anos_pagina:
+                    min_ano = min(anos_pagina)
+                    max_ano = max(anos_pagina)
+                    
+                    if min_ano > ano_alvo_int:
+                        self.view.show_message(f"   -> Página contém apenas anos recentes ({min_ano}-{max_ano}). Pulando para frente...")
+                        page += 1
+                        direcao = 1
+                        if not self.model.go_to_page(page):
+                            self.view.show_message(f"   -> Não há mais páginas. Fim da lista.")
+                            break
+                        continue
+                    elif max_ano < ano_alvo_int:
+                        self.view.show_message(f"   -> Processos anteriores a {ano_alvo} encontrados ({max_ano}).")
+                        
+                        if direcao == -1 or buscando_ano:
+                            # Se já estamos indo para trás ou buscando, significa que já vimos as páginas à frente
+                            self.view.show_message(f"   -> Fim dos processos de {ano_alvo} alcançado (indo para trás).")
+                            break
+                        elif page > 1:
+                            self.view.show_message(f"   -> Passamos do ano alvo. Voltando para procurar o ano {ano_alvo}...")
+                            direcao = -1
+                            buscando_ano = True
+                            page -= 1
+                            if self.model.go_to_page(page):
+                                continue
+                            break
+                        else:
+                            self.view.show_message("   -> Fim da busca por este ano.")
+                            break
 
-            self.view.show_message(f"   -> Verificando se existe página {page + 1}...")
-            if not self.model.go_to_next_page():
+            # Se chegou aqui, a página contém o ano desejado ou não há filtro
+            file_name = f"pagina {page} {safe_name}.pdf"
+            file_path = os.path.join(self.model.download_dir, file_name)
+            if os.path.exists(file_path):
+                self.view.show_message(f"   -> Arquivo '{file_name}' já existe. Pulando download...")
+            else:
+                self.view.show_message(f"   -> Selecionando todos os itens da página {page}...")
+                self.model.select_all_items()
+                self.view.show_progress(page)
+                self.model.click_download_button(page, grupo)
+
+            if direcao == -1:
+                self.view.show_message(f"   -> (Busca reversa) Retrocedendo para a página anterior...")
+                page -= 1
+                if page < 1:
+                    self.view.show_message(f"   -> Chegou na primeira página. Busca reversa finalizada.")
+                    break
+            else:
+                self.view.show_message(f"   -> Avançando para a próxima página...")
+                page += 1
+                
+            if not self.model.go_to_page(page):
                 self.view.show_message(f"   -> Não há mais páginas para o grupo '{grupo}'. Fim da lista.")
                 break
-
-            page += 1
 
         self.view.show_success(f"Download do grupo '{grupo}' finalizado! ({page} páginas processadas)")
 
@@ -164,7 +227,8 @@ class BotController:
                 from models.pdf_analyzer import PdfAnalyzer
                 self.view.show_message("Iniciando análise dos PDFs...")
                 analyzer = PdfAnalyzer()
-                success, msg = analyzer.analyze_pdfs_to_csv()
+                grupos_alvo = [t["grupo"] for t in tarefas] if tarefas else None
+                success, msg = analyzer.analyze_pdfs_to_csv(grupos_alvo=grupos_alvo)
                 if success:
                     self.view.show_success(msg)
                 else:
@@ -204,7 +268,8 @@ class BotController:
                 from models.pdf_analyzer import PdfAnalyzer
                 self.view.show_message("Iniciando análise automática dos PDFs para extração e quantitativos...")
                 analyzer = PdfAnalyzer()
-                success, msg = analyzer.analyze_pdfs_to_csv()
+                grupos_alvo = [t["grupo"] for t in tarefas] if tarefas else None
+                success, msg = analyzer.analyze_pdfs_to_csv(grupos_alvo=grupos_alvo)
                 if success:
                     self.view.show_success(msg)
                 else:
