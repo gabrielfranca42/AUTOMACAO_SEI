@@ -7,7 +7,7 @@ class PdfAnalyzer:
     def __init__(self):
         self.download_dir = os.path.join(os.getcwd(), "downloads")
 
-    def analyze_pdfs_to_csv(self, output_filename="dados_extraidos.csv"):
+    def analyze_pdfs_to_csv(self, output_filename="dados_extraidos.csv", grupos_alvo=None):
         if not os.path.exists(self.download_dir):
             return False, f"A pasta {self.download_dir} não existe."
 
@@ -15,10 +15,16 @@ class PdfAnalyzer:
         for root, dirs, files in os.walk(self.download_dir):
             for file in files:
                 if file.endswith('.pdf'):
+                    if grupos_alvo:
+                        grupos_alvo_upper = [g.upper() for g in grupos_alvo]
+                        rel_path = os.path.relpath(root, self.download_dir).upper()
+                        # Allow either an exact match with the group name, or if the group name is somewhere in the path
+                        if not any(g in rel_path for g in grupos_alvo_upper):
+                            continue
                     pdf_files.append(os.path.join(root, file))
 
         if not pdf_files:
-            return False, "Nenhum arquivo PDF encontrado na pasta downloads ou em suas subpastas."
+            return False, "Nenhum arquivo PDF encontrado na pasta downloads (ou não correspondendo aos grupos selecionados)."
 
         extracted_data = []
         
