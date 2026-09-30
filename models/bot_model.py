@@ -165,6 +165,21 @@ class SeiBotModel:
             print(f"Erro ao salvar PDF da página {page_number}: {e}")
             return False
 
+    def go_to_page(self, page_number):
+        try:
+            select_element = self.driver.find_element(By.ID, "selInfraPaginacaoInferior")
+            from selenium.webdriver.support.ui import Select
+            select = Select(select_element)
+            
+            # Options typically have the text '1', '2', etc.
+            # We can select by visible text
+            select.select_by_visible_text(str(page_number))
+            time.sleep(2) # Aguarda recarregar
+            return True
+        except Exception as e:
+            print(f"Erro ao pular para a página {page_number}: {e}")
+            return False
+
     def go_to_next_page(self):
         try:
             # Encontra o select de paginação mostrado na imagem
@@ -195,28 +210,20 @@ class SeiBotModel:
             print(f"Erro ao mudar de página ou não há paginação: {e}")
             return False
 
-    def has_passed_target_year(self, ano_alvo):
+    def get_years_on_page(self):
+        anos = set()
         try:
-            print(f"[LOG-MODELO] Escaneando datas da tabela em busca de registros anteriores a {ano_alvo}...")
-            # Pega todas as células da tabela principal
+            print("[LOG-MODELO] Escaneando datas da tabela em busca de anos presentes...")
             tds = self.driver.find_elements(By.XPATH, "//table[@id='tblAcompanhamento']//td | //td[contains(@class, 'tdAcompanhamento')]")
-            
             for td in tds:
                 texto = td.text.strip()
-                # Verifica se o texto tem o formato básico de data (ex: 24/09/2026)
                 if len(texto) >= 10 and texto[2] == '/' and texto[5] == '/':
                     ano_tabela_str = texto[6:10]
                     if ano_tabela_str.isdigit():
-                        ano_tabela = int(ano_tabela_str)
-                        if ano_tabela < int(ano_alvo):
-                            print(f"[LOG-MODELO] Data mais antiga encontrada: {texto}. Parando a paginação.")
-                            return True # Encontrou um ano menor que o alvo, deve parar
-            
-            print(f"[LOG-MODELO] Nenhuma data anterior a {ano_alvo} encontrada nesta página.")
-            return False
+                        anos.add(int(ano_tabela_str))
         except Exception as e:
             print(f"[LOG-MODELO] Erro ao ler datas da tabela: {e}")
-            return False
+        return anos
             
     def close(self):
         self.driver.quit()
