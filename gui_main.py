@@ -40,11 +40,21 @@ class AppGUI(ctk.CTk):
 
         ctk.CTkLabel(self.left_frame, text="Configuração de Download", font=("Arial", 16, "bold")).pack(pady=(20, 10))
 
-        self.combo_grupo = ctk.CTkComboBox(self.left_frame, values=["LTS", "DEPENDENTE", "HORARIO ESPECIAL", "DESAVERBAÇÃO"], width=250)
-        self.combo_grupo.set("LTS")
+        self.processos_opcoes = [
+            "TODOS", "LTS", "LDPF", "CAT", "ABONO PERMANENCIA", "ANOTAÇÃO", 
+            "APOSENTADORIA", "APOSENTADORIA POR INVALIDEZ", "AULA ATIVIDADE", 
+            "AVERBAÇÃO", "DESAVERBAÇÃO", "CARGA HORÁRIA", "CASAMENTO/LICENÇA PARA CASAMENTO", 
+            "LICENÇA MATERNIDADE", "LICENÇA MATERNIDADE POR ADOÇÃO", "LICENÇA LUTO", 
+            "LICENÇA PATERNIDADE", "REVISÃO DE VENCIMENTOS", "PROGRESSÃO/TITULAÇÃO", 
+            "CERTIDÃO/DECLARAÇÃO", "DECLARAÇÃO DE VÍNCULO", "DEPENDENTE", "ENQUADRAMENTO ADI", 
+            "FICHA FINANCEIRA/FICHA FUNCIONAL", "HORARIO ESPECIAL", "SALÁRIO FAMÍLIA", 
+            "INSALUBRIDADE", "AFASTAMENTO PARA CANDIDATURA", "ENQUADRAMENTO DE ADMINISTRATIVO"
+        ]
+        self.combo_grupo = ctk.CTkComboBox(self.left_frame, values=self.processos_opcoes, width=250)
+        self.combo_grupo.set("TODOS")
         self.combo_grupo.pack(pady=5)
 
-        self.entry_ano = ctk.CTkEntry(self.left_frame, placeholder_text="Ano Limite (Vazio = Todas)", width=250)
+        self.entry_ano = ctk.CTkEntry(self.left_frame, placeholder_text="Ano Específico (Vazio = Todas)", width=250)
         self.entry_ano.pack(pady=5)
 
         self.btn_add_task = ctk.CTkButton(self.left_frame, text="Adicionar à Lista", command=self.adicionar_tarefa, fg_color="green", hover_color="darkgreen")
@@ -76,7 +86,7 @@ class AppGUI(ctk.CTk):
         self.right_frame = ctk.CTkFrame(self)
         self.right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
 
-        ctk.CTkLabel(self.right_frame, text="Fila de Tarefas", font=("Arial", 16, "bold")).pack(pady=10)
+        ctk.CTkLabel(self.right_frame, text="Fila de Tarefas (P/ Baixar ou Extrair)", font=("Arial", 16, "bold")).pack(pady=10)
         
         self.lista_tarefas_box = ctk.CTkTextbox(self.right_frame, height=100, state="disabled")
         self.lista_tarefas_box.pack(padx=10, pady=5, fill="x")
@@ -98,15 +108,26 @@ class AppGUI(ctk.CTk):
         grupo = self.combo_grupo.get().strip().upper()
         ano = self.entry_ano.get().strip()
         
-        if grupo:
-            self.tarefas.append({"grupo": grupo, "ano": ano})
-            
-            # Atualiza listbox
-            self.lista_tarefas_box.configure(state="normal")
-            limite_texto = f" (até {ano})" if ano else " (todas)"
-            self.lista_tarefas_box.insert("end", f"- {grupo}{limite_texto}\n")
-            self.lista_tarefas_box.configure(state="disabled")
-            
+        if grupo == "TODOS":
+            processos = [p.upper() for p in self.processos_opcoes if p != "TODOS"]
+            for p in processos:
+                if not any(t["grupo"] == p and t["ano"] == ano for t in self.tarefas):
+                    self.tarefas.append({"grupo": p, "ano": ano})
+                    self.lista_tarefas_box.configure(state="normal")
+                    limite_texto = f" (até {ano})" if ano else " (todas)"
+                    self.lista_tarefas_box.insert("end", f"- {p}{limite_texto}\n")
+                    self.lista_tarefas_box.configure(state="disabled")
+            self.entry_ano.delete(0, 'end')
+        elif grupo:
+            if not any(t["grupo"] == grupo and t["ano"] == ano for t in self.tarefas):
+                self.tarefas.append({"grupo": grupo, "ano": ano})
+                
+                # Atualiza listbox
+                self.lista_tarefas_box.configure(state="normal")
+                limite_texto = f" (até {ano})" if ano else " (todas)"
+                self.lista_tarefas_box.insert("end", f"- {grupo}{limite_texto}\n")
+                self.lista_tarefas_box.configure(state="disabled")
+                
             # Limpa campo
             self.entry_ano.delete(0, 'end')
 
@@ -148,7 +169,7 @@ class AppGUI(ctk.CTk):
         self.btn_start.configure(state="disabled")
         self.btn_analise.configure(state="disabled")
         
-        t = threading.Thread(target=self._run_bot_thread, args=("", "", "", "analise", [], "N"))
+        t = threading.Thread(target=self._run_bot_thread, args=("", "", "", "analise", self.tarefas, "N"))
         t.start()
 
     def _run_bot_thread(self, user, pwd, orgao, opcao, tarefas, fazer_csv):
