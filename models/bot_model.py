@@ -1,5 +1,6 @@
 import time
 import os
+import re
 import base64
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -13,8 +14,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 class SeiBotModel:
     def __init__(self):
-        chrome_options = Options()
-        
         # Pasta raiz de downloads
         self.download_root = os.path.join(os.getcwd(), "downloads")
         if not os.path.exists(self.download_root):
@@ -22,9 +21,30 @@ class SeiBotModel:
         
         # Subpasta atual (será definida para cada grupo)
         self.download_dir = self.download_root
-            
-        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        self.wait = WebDriverWait(self.driver, 10)
+        
+        # Browser com inicialização sob demanda (lazy init)
+        self._driver = None
+        self._wait = None
+
+    def _ensure_browser(self):
+        """Inicializa o navegador somente quando necessário."""
+        if self._driver is None:
+            chrome_options = Options()
+            self._driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()), 
+                options=chrome_options
+            )
+            self._wait = WebDriverWait(self._driver, 10)
+
+    @property
+    def driver(self):
+        self._ensure_browser()
+        return self._driver
+    
+    @property
+    def wait(self):
+        self._ensure_browser()
+        return self._wait
 
     def set_download_subdir(self, grupo_name):
         """Cria e define a subpasta de downloads para o grupo atual."""
@@ -121,7 +141,56 @@ class SeiBotModel:
             print(f"[LOG-MODELO] Erro ao selecionar itens: {e}")
             return False
 
-    def click_download_button(self, page_number, grupo_name=""):
+    def get_page_info(self):
+        """Extrai informações detalhadas de data/hora da tabela da página atual.
+        Retorna dict com: first_date, first_time, month, year, all_dates, all_years"""
+        info = {
+            'first_date': None,
+            'first_time': None,
+            'month': None,
+            'year': None,
+            'all_dates': [],
+            'all_years': set()
+        }
+        try:
+            print("[LOG-MODELO] Extraindo informações de data/hora da página...")
+            tds = self.driver.find_elements(By.XPATH, 
+                "//table[@id='tblAcompanhamento']//td | //td[contains(@class, 'tdAcompanhamento')]")
+            
+            for td in tds:
+                texto = td.text.strip()
+                # Procura padrão de data DD/MM/YYYY
+                date_matches = re.findall(r'(\d{2}/\d{2}/\d{4})', texto)
+                for date_str in date_matches:
+                    info['all_dates'].append(date_str)
+                    ano_str = date_str[6:10]
+                    if ano_str.isdigit():
+                        info['all_years'].add(int(ano_str))
+                    
+                    # Captura o primeiro registro encontrado
+                    if info['first_date'] is None:
+                        info['first_date'] = date_str
+                        info['month'] = date_str[3:5]
+                        info['year'] = date_str[6:10]
+                        
+                        # Tenta encontrar horário no mesmo texto
+                        time_match = re.search(r'(\d{2}:\d{2}:\d{2})', texto)
+                        if time_match:
+                            info['first_time'] = time_match.group(1)
+        except Exception as e:
+            print(f"[LOG-MODELO] Erro ao extrair info da página: {e}")
+        
+        return info
+
+    def get_years_on_page(self):
+        """Método de compatibilidade. Retorna set de anos encontrados na página."""
+        info = self.get_page_info()
+        return info['all_years']
+
+    def click_download_button(self, page_number, grupo_name="", custom_filename=None):
+        """Baixa a página atual como PDF.
+        Se custom_filename for fornecido, usa-o. Caso contrário, gera nome padrão."""
+        main_window = None
         try:
             # Desativa o dialog de impressão do navegador para não travar o bot
             self.driver.execute_script("window.print = function() {};")
@@ -140,14 +209,59 @@ class SeiBotModel:
                         self.driver.switch_to.window(window)
                         break
             
+            # Garante que a tabela não fique cortada na hora do print (força via CSS universal focado na impressão)
+            self.driver.execute_script("""
+                var css = `
+                    @media print {
+                        html, body, form, fieldset, div, table, tbody, tr, td {
+                            height: auto !important;
+                            max-height: none !important;
+                            overflow: visible !important;
+                            position: relative !important;
+                            display: block !important;
+                        }
+                        table { display: table !important; }
+                        tbody { display: table-row-group !important; }
+                        tr { display: table-row !important; page-break-inside: avoid !important; }
+                        td, th { display: table-cell !important; }
+                        #divInfraAreaTela, #divInfraAreaTabela, .infraAreaTela, .infraAreaTabela {
+                            position: relative !important;
+                            height: auto !important;
+                            overflow: visible !important;
+                        }
+                    }
+                `;
+                var style = document.createElement('style');
+                style.innerHTML = css;
+                document.head.appendChild(style);
+                
+                var iframes = document.querySelectorAll('iframe');
+                for(var i=0; i<iframes.length; i++){
+                    try {
+                        var iframeStyle = iframes[i].contentWindow.document.createElement('style');
+                        iframeStyle.innerHTML = css;
+                        iframes[i].contentWindow.document.head.appendChild(iframeStyle);
+                    } catch(e) {}
+                }
+            """)
+            time.sleep(1) # Aguarda o layout se ajustar
+
             # Salva a página como PDF usando recursos do Selenium 4
             from selenium.webdriver.common.print_page_options import PrintOptions
             print_options = PrintOptions()
+            # Define uma página extremamente longa (60 cm) para evitar que a tabela seja cortada na quebra de página
+            print_options.page_height = 60.0
+            print_options.page_width = 21.0
+            
             pdf_base64 = self.driver.print_page(print_options)
             
-            # Nome do arquivo: "pagina 1 lts.pdf"
-            grupo_label = grupo_name.lower().strip() if grupo_name else "grupo"
-            file_name = f"pagina {page_number} {grupo_label}.pdf"
+            # Nome do arquivo
+            if custom_filename:
+                file_name = custom_filename
+            else:
+                grupo_label = grupo_name.lower().strip() if grupo_name else "grupo"
+                file_name = f"pagina {page_number} {grupo_label}.pdf"
+            
             file_path = os.path.join(self.download_dir, file_name)
             
             with open(file_path, "wb") as f:
@@ -163,6 +277,13 @@ class SeiBotModel:
             return True
         except Exception as e:
             print(f"Erro ao salvar PDF da página {page_number}: {e}")
+            # Tenta voltar para a janela principal em caso de erro
+            try:
+                if main_window and len(self.driver.window_handles) > 1:
+                    self.driver.close()
+                    self.driver.switch_to.window(main_window)
+            except:
+                pass
             return False
 
     def go_to_page(self, page_number):
@@ -209,21 +330,9 @@ class SeiBotModel:
         except Exception as e:
             print(f"Erro ao mudar de página ou não há paginação: {e}")
             return False
-
-    def get_years_on_page(self):
-        anos = set()
-        try:
-            print("[LOG-MODELO] Escaneando datas da tabela em busca de anos presentes...")
-            tds = self.driver.find_elements(By.XPATH, "//table[@id='tblAcompanhamento']//td | //td[contains(@class, 'tdAcompanhamento')]")
-            for td in tds:
-                texto = td.text.strip()
-                if len(texto) >= 10 and texto[2] == '/' and texto[5] == '/':
-                    ano_tabela_str = texto[6:10]
-                    if ano_tabela_str.isdigit():
-                        anos.add(int(ano_tabela_str))
-        except Exception as e:
-            print(f"[LOG-MODELO] Erro ao ler datas da tabela: {e}")
-        return anos
             
     def close(self):
-        self.driver.quit()
+        if self._driver:
+            self._driver.quit()
+            self._driver = None
+            self._wait = None
