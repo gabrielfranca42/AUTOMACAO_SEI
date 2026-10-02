@@ -36,3 +36,12 @@ venv.bak/
 # IDEs
 .vscode/
 .idea/
+
+# Scripts de teste
+check_pdfs.py
+check_pages.py
+temp.txt
+temp_debug.txt
+
+# Dados gerados
+*.csv
